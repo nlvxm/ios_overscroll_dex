@@ -16,136 +16,115 @@ import java.util.WeakHashMap;
 
 public class IOSOverScroll {
 
-    public static final float intensity = 1.35f;
-    public static final float flingIntensity = 1.30f;
-    public static final float springOmega = 19.5f;
+    public static float intensity = 1.35f;
+    public static float flingIntensity = 1.30f;
+    public static float springOmega = 19.5f;
+    public static float springZeta = 0.72f;
+    public static float zetaOmega = 14.04f;
+    public static float omegaD = 13.5325f;
+    public static float zoomIntensity = 1.0f;
+
+    public static void setConfig(double i, double f, double o, double z, double zm) {
+        intensity = (float) i;
+        flingIntensity = (float) f;
+        springOmega = (float) o;
+        springZeta = (float) z;
+        zetaOmega = springZeta * springOmega;
+        omegaD = (float) (springOmega * Math.sqrt(Math.max(0.001, 1.0 - springZeta * springZeta)));
+        zoomIntensity = (float) zm;
+    }
 
     private static final Map<ViewGroup, OverScrollController> controllers =
             Collections.synchronizedMap(new WeakHashMap<ViewGroup, OverScrollController>());
-
     private static final List<XC_MethodHook.Unhook> unhooks = new ArrayList<>();
 
     public static synchronized OverScrollController getOrCreateController(ViewGroup listView) {
         OverScrollController controller = controllers.get(listView);
         if (controller == null) {
-            controller = new OverScrollController(listView);
-            controllers.put(listView, controller);
+            controllers.put(listView, controller = new OverScrollController(listView));
         }
         return controller;
     }
 
+    private static void hook(Class<?> cls, String name, Class<?>[] params, XC_MethodHook hook) {
+        try {
+            Method m = cls.getDeclaredMethod(name, params);
+            m.setAccessible(true);
+            unhooks.add(XposedBridge.hookMethod(m, hook));
+        } catch (Throwable ignored) {}
+    }
+
     public static synchronized void start() {
         stop();
-
         try {
             ClassLoader cl = IOSOverScroll.class.getClassLoader();
-            if (cl == null) {
-                cl = ClassLoader.getSystemClassLoader();
-            }
+            if (cl == null) cl = ClassLoader.getSystemClassLoader();
 
-            Class<?> recyclerListViewClass = cl.loadClass("org.telegram.ui.Components.RecyclerListView");
-            Class<?> recyclerViewClass = cl.loadClass("androidx.recyclerview.widget.RecyclerView");
+            final Class<?> rlv = cl.loadClass("org.telegram.ui.Components.RecyclerListView");
+            Class<?> rv = cl.loadClass("androidx.recyclerview.widget.RecyclerView");
 
-            Method dispatchTouchEventMethod = recyclerListViewClass.getDeclaredMethod("dispatchTouchEvent", MotionEvent.class);
-            dispatchTouchEventMethod.setAccessible(true);
-            unhooks.add(XposedBridge.hookMethod(dispatchTouchEventMethod, new XC_MethodHook() {
+            hook(rlv, "dispatchTouchEvent", new Class<?>[]{MotionEvent.class}, new XC_MethodHook() {
                 @Override
-                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                    ViewGroup listView = (ViewGroup) param.thisObject;
+                protected void beforeHookedMethod(MethodHookParam param) {
                     MotionEvent ev = (MotionEvent) param.args[0];
-                    if (ev == null) return;
-
-                    OverScrollController controller = getOrCreateController(listView);
-                    if (controller.onBeforeDispatchTouchEvent(ev)) {
+                    if (ev != null && getOrCreateController((ViewGroup) param.thisObject).onBeforeDispatchTouchEvent(ev)) {
                         param.setResult(Boolean.TRUE);
                     }
                 }
 
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    ViewGroup listView = (ViewGroup) param.thisObject;
+                protected void afterHookedMethod(MethodHookParam param) {
                     MotionEvent ev = (MotionEvent) param.args[0];
-                    if (ev == null) return;
-
-                    OverScrollController controller = getOrCreateController(listView);
-                    controller.onAfterDispatchTouchEvent(ev);
+                    if (ev != null) {
+                        getOrCreateController((ViewGroup) param.thisObject).onAfterDispatchTouchEvent(ev);
+                    }
                 }
-            }));
+            });
 
-            try {
-                Method absorbGlowsMethod = recyclerViewClass.getDeclaredMethod("absorbGlows", int.class, int.class);
-                absorbGlowsMethod.setAccessible(true);
-                unhooks.add(XposedBridge.hookMethod(absorbGlowsMethod, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (!recyclerListViewClass.isInstance(param.thisObject)) return;
-
-                        ViewGroup listView = (ViewGroup) param.thisObject;
+            hook(rv, "absorbGlows", new Class<?>[]{int.class, int.class}, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (rlv.isInstance(param.thisObject)) {
                         int velY = (Integer) param.args[1];
                         if (velY != 0) {
-                            OverScrollController controller = getOrCreateController(listView);
-                            controller.onFlingHitEdge(-velY);
+                            getOrCreateController((ViewGroup) param.thisObject).onFlingHitEdge(-velY);
                             param.setResult(null);
                         }
                     }
-                }));
-            } catch (Throwable ignored) {
-            }
+                }
+            });
 
-            try {
-                Method reqDisallowMethod = recyclerViewClass.getDeclaredMethod("requestDisallowInterceptTouchEvent", boolean.class);
-                reqDisallowMethod.setAccessible(true);
-                unhooks.add(XposedBridge.hookMethod(reqDisallowMethod, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (recyclerListViewClass.isInstance(param.thisObject)) {
-                            ViewGroup listView = (ViewGroup) param.thisObject;
-                            boolean disallow = (Boolean) param.args[0];
-                            OverScrollController controller = getOrCreateController(listView);
-                            controller.setDisallowIntercept(disallow);
-                        }
+            hook(rv, "requestDisallowInterceptTouchEvent", new Class<?>[]{boolean.class}, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (rlv.isInstance(param.thisObject)) {
+                        getOrCreateController((ViewGroup) param.thisObject).setDisallowIntercept((Boolean) param.args[0]);
                     }
-                }));
-            } catch (Throwable ignored) {
-            }
+                }
+            });
 
-            try {
-                Method setOverScrollModeMethod = View.class.getDeclaredMethod("setOverScrollMode", int.class);
-                setOverScrollModeMethod.setAccessible(true);
-                unhooks.add(XposedBridge.hookMethod(setOverScrollModeMethod, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        if (recyclerListViewClass.isInstance(param.thisObject)) {
-                            int mode = (Integer) param.args[0];
-                            if (mode == View.OVER_SCROLL_NEVER) {
-                                param.args[0] = View.OVER_SCROLL_ALWAYS;
-                            }
-                        }
+            hook(View.class, "setOverScrollMode", new Class<?>[]{int.class}, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (rlv.isInstance(param.thisObject) && (Integer) param.args[0] == View.OVER_SCROLL_NEVER) {
+                        param.args[0] = View.OVER_SCROLL_ALWAYS;
                     }
-                }));
-            } catch (Throwable ignored) {
-            }
-
-        } catch (Throwable t) {
-            t.printStackTrace();
-        }
+                }
+            });
+        } catch (Throwable ignored) {}
     }
 
     public static synchronized void stop() {
         for (XC_MethodHook.Unhook unhook : unhooks) {
             try {
                 unhook.unhook();
-            } catch (Throwable ignored) {
-            }
+            } catch (Throwable ignored) {}
         }
         unhooks.clear();
 
         synchronized (controllers) {
             for (OverScrollController controller : controllers.values()) {
-                if (controller != null) {
-                    controller.stopAnimation();
-                    controller.resetOffset();
-                }
+                if (controller != null) controller.reset();
             }
             controllers.clear();
         }
