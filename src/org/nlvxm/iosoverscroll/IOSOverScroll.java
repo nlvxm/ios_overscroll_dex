@@ -1,8 +1,10 @@
 package org.nlvxm.iosoverscroll;
 
+import android.graphics.Canvas;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EdgeEffect;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -23,8 +25,9 @@ public class IOSOverScroll {
     public static float zetaOmega = 14.04f;
     public static float omegaD = 13.5325f;
     public static float zoomIntensity = 1.0f;
+    public static float stretchIntensity = 1.0f;
 
-    public static void setConfig(double i, double f, double o, double z, double zm) {
+    public static void setConfig(double i, double f, double o, double z, double zm, double str) {
         intensity = (float) i;
         flingIntensity = (float) f;
         springOmega = (float) o;
@@ -32,6 +35,11 @@ public class IOSOverScroll {
         zetaOmega = springZeta * springOmega;
         omegaD = (float) (springOmega * Math.sqrt(Math.max(0.001, 1.0 - springZeta * springZeta)));
         zoomIntensity = (float) zm;
+        stretchIntensity = (float) str;
+    }
+
+    public static void setConfig(double i, double f, double o, double z, double zm) {
+        setConfig(i, f, o, z, zm, 0.0);
     }
 
     private static final Map<ViewGroup, OverScrollController> controllers =
@@ -109,6 +117,27 @@ public class IOSOverScroll {
                     if (rlv.isInstance(param.thisObject) && (Integer) param.args[0] == View.OVER_SCROLL_NEVER) {
                         param.args[0] = View.OVER_SCROLL_ALWAYS;
                     }
+                }
+            });
+
+            hook(EdgeEffect.class, "draw", new Class<?>[]{Canvas.class}, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    param.setResult(Boolean.FALSE);
+                }
+            });
+
+            hook(EdgeEffect.class, "onPull", new Class<?>[]{float.class, float.class}, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    param.setResult(null);
+                }
+            });
+
+            hook(EdgeEffect.class, "onPullDistance", new Class<?>[]{float.class, float.class}, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    param.setResult(Float.valueOf(0f));
                 }
             });
         } catch (Throwable ignored) {}

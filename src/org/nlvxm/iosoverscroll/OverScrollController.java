@@ -71,6 +71,10 @@ public class OverScrollController {
     public OverScrollController(ViewGroup listView) {
         this.listView = listView;
         this.touchSlop = ViewConfiguration.get(listView.getContext()).getScaledTouchSlop();
+        try {
+            Method m = listView.getClass().getMethod("setGlowColor", int.class);
+            m.invoke(listView, 0);
+        } catch (Throwable ignored) {}
         listView.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
             @Override
             public void onViewAttachedToWindow(View v) {}
@@ -303,7 +307,7 @@ public class OverScrollController {
     }
 
     private void applyZoom(float off) {
-        if (IOSOverScroll.zoomIntensity <= 0f) {
+        if ((IOSOverScroll.zoomIntensity <= 0f && IOSOverScroll.stretchIntensity <= 0f) || Math.abs(off) < 1.0f) {
             resetZoom();
             return;
         }
@@ -314,19 +318,23 @@ public class OverScrollController {
             resetZoom();
             return;
         }
+
         float zm = IOSOverScroll.zoomIntensity;
+        float str = IOSOverScroll.stretchIntensity;
         float density = listView.getResources().getDisplayMetrics().density;
         float camDist = density * 8000f;
         float pivotY = off > 0f ? 0f : h;
         float pivotX = listView.getWidth() * 0.5f;
-        float rot = Math.max(-6.5f, Math.min(6.5f, -(off / (h * 0.45f)) * zm * 4.5f));
-        float containerScale = Math.max(0.85f, 1.0f - progress * zm * 0.04f);
+
+        float rot = zm > 0f ? Math.max(-6.5f, Math.min(6.5f, -(off / (h * 0.45f)) * zm * 4.5f)) : 0f;
+        float containerScale = zm > 0f ? Math.max(0.85f, 1.0f - progress * zm * 0.04f) : 1.0f;
+        float containerStretchY = str > 0f ? (1.0f + progress * str * 0.05f) : 1.0f;
 
         listView.setCameraDistance(camDist);
         listView.setPivotX(pivotX);
         listView.setPivotY(pivotY);
         listView.setScaleX(containerScale);
-        listView.setScaleY(containerScale);
+        listView.setScaleY(containerScale * containerStretchY);
         listView.setRotationX(rot);
 
         float k = progress * zm * 0.06f;
@@ -335,24 +343,52 @@ public class OverScrollController {
             if (v != null) {
                 float dist = off > 0f ? (v.getTop() / h) : ((h - v.getBottom()) / h);
                 dist = Math.max(0f, Math.min(1f, dist));
-                float s = Math.max(0.75f, 1.0f - k * (0.25f + 0.75f * dist));
+
+                float sx = 1.0f;
+                float sy = 1.0f;
+                if (zm > 0f) {
+                    float s = Math.max(0.75f, 1.0f - k * (0.25f + 0.75f * dist));
+                    sx = s;
+                    sy = s;
+                }
+
+                float extraY = 0f;
+                if (str > 0f) {
+                    extraY = off * (0.30f * str) * (dist * dist * 0.7f + dist * 0.3f);
+                    sy *= (1.0f + progress * str * 0.04f * (1.0f - 0.3f * dist));
+                }
+
                 v.setPivotX(v.getWidth() * 0.5f);
-                v.setPivotY(v.getHeight() * 0.5f);
-                v.setScaleX(s);
-                v.setScaleY(s);
+                v.setPivotY(off > 0f ? 0f : v.getHeight());
+                v.setScaleX(sx);
+                v.setScaleY(sy);
+                v.setTranslationY(extraY);
             }
         }
+
         for (int i = 0, size = floatingViews.size(); i < size; i++) {
             View v = floatingViews.get(i).view;
             if (v != null) {
                 float dist = off > 0f ? (v.getTop() / h) : ((h - v.getBottom()) / h);
                 dist = Math.max(0f, Math.min(1f, dist));
-                float s = Math.max(0.75f, 1.0f - k * (0.25f + 0.75f * dist));
+
+                float sx = 1.0f;
+                float sy = 1.0f;
+                if (zm > 0f) {
+                    float s = Math.max(0.75f, 1.0f - k * (0.25f + 0.75f * dist));
+                    sx = s * containerScale;
+                    sy = s * containerScale;
+                }
+
+                if (str > 0f) {
+                    sy *= containerStretchY;
+                }
+
                 v.setCameraDistance(camDist);
                 v.setPivotX(v.getWidth() * 0.5f);
                 v.setPivotY(pivotY);
-                v.setScaleX(s * containerScale);
-                v.setScaleY(s * containerScale);
+                v.setScaleX(sx);
+                v.setScaleY(sy);
                 v.setRotationX(rot);
             }
         }
@@ -366,9 +402,14 @@ public class OverScrollController {
         }
         for (int i = 0, count = listView.getChildCount(); i < count; i++) {
             View v = listView.getChildAt(i);
-            if (v != null && (v.getScaleX() != 1.0f || v.getScaleY() != 1.0f)) {
-                v.setScaleX(1.0f);
-                v.setScaleY(1.0f);
+            if (v != null) {
+                if (v.getScaleX() != 1.0f || v.getScaleY() != 1.0f) {
+                    v.setScaleX(1.0f);
+                    v.setScaleY(1.0f);
+                }
+                if (v.getTranslationY() != 0f) {
+                    v.setTranslationY(0f);
+                }
             }
         }
         for (int i = 0, size = floatingViews.size(); i < size; i++) {
@@ -540,10 +581,6 @@ public class OverScrollController {
                     startSpring(offset, v);
                     state = STATE_IDLE;
                     return true;
-                } else if (state == STATE_IDLE && action == MotionEvent.ACTION_UP) {
-                    if ((vy > 750f && !listView.canScrollVertically(-1)) || (vy < -750f && !listView.canScrollVertically(1))) {
-                        onFlingHitEdge(vy);
-                    }
                 }
                 state = STATE_IDLE;
                 break;
@@ -641,7 +678,7 @@ public class OverScrollController {
             float x = decay * (c1 * cos + c2 * sin);
             float v = decay * ((od * c2 - zo * c1) * cos - (od * c1 + zo * c2) * sin);
 
-            if (Math.abs(x) < 0.5f && Math.abs(v) < 20f) {
+            if (Math.abs(x) < 0.8f && Math.abs(v) < 25f) {
                 reset();
                 return;
             }
