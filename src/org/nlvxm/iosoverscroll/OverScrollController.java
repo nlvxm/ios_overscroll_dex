@@ -11,6 +11,7 @@ import android.view.ViewParent;
 import android.widget.FrameLayout;
 
 import java.lang.reflect.Field;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,6 +45,7 @@ public class OverScrollController {
     public float offset = 0f;
     private float pull = 0f;
     public int state = STATE_IDLE;
+    private float baseTranslationY = 0f;
 
     private float downTouchX, downTouchY, lastTouchX, lastTouchY;
     private int activePointerId = MotionEvent.INVALID_POINTER_ID;
@@ -64,13 +66,14 @@ public class OverScrollController {
 
     private Boolean isExcluded;
     private boolean swipingReflectInit = false;
-    private Object enclosingActivity;
+    private WeakReference<Object> enclosingActivityRef;
     private Field pdoField, pboField, trackField;
     private Method getViewOffsetMethod;
 
     public OverScrollController(ViewGroup listView) {
         this.listView = listView;
         this.touchSlop = ViewConfiguration.get(listView.getContext()).getScaledTouchSlop();
+        this.baseTranslationY = listView.getTranslationY();
         try {
             Method m = listView.getClass().getMethod("setGlowColor", int.class);
             m.invoke(listView, 0);
@@ -110,7 +113,7 @@ public class OverScrollController {
         return rubberC() * k * k;
     }
 
-    private boolean isExcludedScreen() {
+    public boolean isExcludedScreen() {
         if (isExcluded == null) {
             for (ViewParent p = listView; p instanceof View; p = p.getParent()) {
                 String n = p.getClass().getName();
@@ -199,10 +202,12 @@ public class OverScrollController {
                 try {
                     Field f = c.getDeclaredField("this$0");
                     f.setAccessible(true);
-                    enclosingActivity = f.get(listView);
+                    Object owner = f.get(listView);
+                    if (owner != null) enclosingActivityRef = new WeakReference<>(owner);
                     break;
                 } catch (Throwable ignored) {}
             }
+            Object enclosingActivity = enclosingActivityRef != null ? enclosingActivityRef.get() : null;
             if (enclosingActivity != null) {
                 for (Class<?> c = enclosingActivity.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
                     try { (pdoField = c.getDeclaredField("pullingDownOffset")).setAccessible(true); } catch (Throwable ignored) {}
@@ -219,6 +224,7 @@ public class OverScrollController {
     private boolean isTelegramSwiping() {
         initSwipingReflect();
         try {
+            Object enclosingActivity = enclosingActivityRef != null ? enclosingActivityRef.get() : null;
             if (enclosingActivity != null) {
                 if (pdoField != null && Math.abs(pdoField.getFloat(enclosingActivity)) > 0.001f) return true;
                 if (pboField != null && Math.abs(pboField.getFloat(enclosingActivity)) > 0.001f) return true;
@@ -249,13 +255,14 @@ public class OverScrollController {
             String simple = child.getClass().getSimpleName();
             if (simple.contains("ActionBar") || simple.contains("EnterView") ||
                 simple.contains("ChatInput") || simple.contains("TopPanel") ||
+                simple.contains("MentionsContainer") || simple.contains("SuggestEmoji") ||
+                simple.contains("BotCommandsMenu") ||
                 name.contains("roundVideoRecordBackground")) {
                 continue;
             }
 
             boolean isFloating = false, isBottom = false;
             if (simple.contains("ChatActionCell") || simple.contains("TopicSeparator") ||
-                simple.contains("SuggestEmoji") || simple.contains("MentionsContainer") ||
                 simple.contains("FloatingDate") || simple.contains("infoTopView") ||
                 simple.contains("HintView") || simple.contains("hint")) {
                 isFloating = true;
@@ -284,7 +291,7 @@ public class OverScrollController {
 
     public void updateOffset(float newOffset) {
         this.offset = newOffset;
-        listView.setTranslationY(newOffset);
+        listView.setTranslationY(baseTranslationY + newOffset);
         for (int i = 0, size = floatingViews.size(); i < size; i++) {
             FloatingView fv = floatingViews.get(i);
             fv.view.setTranslationY(fv.initY + (fv.bottom ? Math.min(0f, newOffset) : newOffset));
@@ -296,7 +303,7 @@ public class OverScrollController {
     public void resetOffset() {
         this.offset = 0f;
         this.pull = 0f;
-        listView.setTranslationY(0f);
+        listView.setTranslationY(baseTranslationY);
         for (int i = 0, size = floatingViews.size(); i < size; i++) {
             FloatingView fv = floatingViews.get(i);
             fv.view.setTranslationY(fv.initY);
@@ -450,6 +457,9 @@ public class OverScrollController {
                     if (!caught) reset();
                 }
                 state = caught ? STATE_DRAGGING : STATE_IDLE;
+                if (!caught) {
+                    baseTranslationY = listView.getTranslationY();
+                }
 
                 activePointerId = ev.getPointerId(0);
                 downTouchX = lastTouchX = ev.getX();
@@ -619,6 +629,7 @@ public class OverScrollController {
 
         if (((atTop && dy > 0) || (atBottom && dy < 0)) && totalDy > touchSlop) {
             state = STATE_DRAGGING;
+            baseTranslationY = listView.getTranslationY() - offset;
             prepareFloatingViews();
             cancelChildPress(ev);
             ViewParent p = listView.getParent();
@@ -636,6 +647,7 @@ public class OverScrollController {
         if (isExcludedScreen() || isGestureBlocked()) return;
 
         prepareFloatingViews();
+        baseTranslationY = listView.getTranslationY() - offset;
 
         float scaledV0 = velocityY * (0.25f * IOSOverScroll.flingIntensity);
         float maxV0 = 6500.0f * IOSOverScroll.flingIntensity;

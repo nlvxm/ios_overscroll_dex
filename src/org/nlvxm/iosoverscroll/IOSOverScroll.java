@@ -9,6 +9,7 @@ import android.widget.EdgeEffect;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,14 +43,16 @@ public class IOSOverScroll {
         setConfig(i, f, o, z, zm, 0.0);
     }
 
-    private static final Map<ViewGroup, OverScrollController> controllers =
-            Collections.synchronizedMap(new WeakHashMap<ViewGroup, OverScrollController>());
+    private static final Map<ViewGroup, WeakReference<OverScrollController>> controllers =
+            Collections.synchronizedMap(new WeakHashMap<ViewGroup, WeakReference<OverScrollController>>());
     private static final List<XC_MethodHook.Unhook> unhooks = new ArrayList<>();
 
     public static synchronized OverScrollController getOrCreateController(ViewGroup listView) {
-        OverScrollController controller = controllers.get(listView);
+        WeakReference<OverScrollController> ref = controllers.get(listView);
+        OverScrollController controller = ref != null ? ref.get() : null;
         if (controller == null) {
-            controllers.put(listView, controller = new OverScrollController(listView));
+            controller = new OverScrollController(listView);
+            controllers.put(listView, new WeakReference<>(controller));
         }
         return controller;
     }
@@ -93,9 +96,11 @@ public class IOSOverScroll {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     if (rlv.isInstance(param.thisObject)) {
+                        OverScrollController controller = getOrCreateController((ViewGroup) param.thisObject);
+                        if (controller.isExcludedScreen()) return;
                         int velY = (Integer) param.args[1];
                         if (velY != 0) {
-                            getOrCreateController((ViewGroup) param.thisObject).onFlingHitEdge(-velY);
+                            controller.onFlingHitEdge(-velY);
                             param.setResult(null);
                         }
                     }
@@ -115,6 +120,7 @@ public class IOSOverScroll {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     if (rlv.isInstance(param.thisObject) && (Integer) param.args[0] == View.OVER_SCROLL_NEVER) {
+                        if (getOrCreateController((ViewGroup) param.thisObject).isExcludedScreen()) return;
                         param.args[0] = View.OVER_SCROLL_ALWAYS;
                     }
                 }
@@ -152,7 +158,8 @@ public class IOSOverScroll {
         unhooks.clear();
 
         synchronized (controllers) {
-            for (OverScrollController controller : controllers.values()) {
+            for (WeakReference<OverScrollController> ref : controllers.values()) {
+                OverScrollController controller = ref != null ? ref.get() : null;
                 if (controller != null) controller.reset();
             }
             controllers.clear();
