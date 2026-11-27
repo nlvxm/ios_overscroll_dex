@@ -57,6 +57,15 @@ public class IOSOverScroll {
         return controller;
     }
 
+    private static XC_MethodHook constantHook(final Object result) {
+        return new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                param.setResult(result);
+            }
+        };
+    }
+
     private static void hook(Class<?> cls, String name, Class<?>[] params, XC_MethodHook hook) {
         try {
             Method m = cls.getDeclaredMethod(name, params);
@@ -126,26 +135,15 @@ public class IOSOverScroll {
                 }
             });
 
-            hook(EdgeEffect.class, "draw", new Class<?>[]{Canvas.class}, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    param.setResult(Boolean.FALSE);
-                }
-            });
-
-            hook(EdgeEffect.class, "onPull", new Class<?>[]{float.class, float.class}, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    param.setResult(null);
-                }
-            });
-
-            hook(EdgeEffect.class, "onPullDistance", new Class<?>[]{float.class, float.class}, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    param.setResult(Float.valueOf(0f));
-                }
-            });
+            XC_MethodHook noop = constantHook(null);
+            XC_MethodHook zero = constantHook(0f);
+            hook(EdgeEffect.class, "draw", new Class<?>[]{Canvas.class}, constantHook(Boolean.FALSE));
+            hook(EdgeEffect.class, "onPull", new Class<?>[]{float.class}, noop);
+            hook(EdgeEffect.class, "onPull", new Class<?>[]{float.class, float.class}, noop);
+            hook(EdgeEffect.class, "onPullDistance", new Class<?>[]{float.class, float.class}, zero);
+            hook(EdgeEffect.class, "onAbsorb", new Class<?>[]{int.class}, noop);
+            hook(EdgeEffect.class, "isFinished", new Class<?>[0], constantHook(Boolean.TRUE));
+            hook(EdgeEffect.class, "getDistance", new Class<?>[0], zero);
         } catch (Throwable ignored) {}
     }
 

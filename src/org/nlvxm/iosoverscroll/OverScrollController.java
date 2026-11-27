@@ -1,5 +1,6 @@
 package org.nlvxm.iosoverscroll;
 
+import android.graphics.Rect;
 import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -25,7 +26,7 @@ public class OverScrollController {
 
     private static Field groupFlagsField, itemTouchListenersField, itemTouchHelperField, itemTouchHelperSelectedField;
     private static int draggingId = 0;
-    private static Method multiselectMethod, actionModeMethod, cancelClickMethod;
+    private static Method multiselectMethod, actionModeMethod, cancelClickMethod, getLayoutManagerMethod, canScrollHorizMethod, stopScrollMethod;
 
     static {
         try {
@@ -35,7 +36,11 @@ public class OverScrollController {
             draggingId = Class.forName("org.telegram.messenger.R$id").getField("dragging").getInt(null);
         } catch (Throwable ignored) {}
         try {
-            (itemTouchListenersField = Class.forName("androidx.recyclerview.widget.RecyclerView").getDeclaredField("mOnItemTouchListeners")).setAccessible(true);
+            Class<?> rvClass = Class.forName("androidx.recyclerview.widget.RecyclerView");
+            (itemTouchListenersField = rvClass.getDeclaredField("mOnItemTouchListeners")).setAccessible(true);
+            getLayoutManagerMethod = rvClass.getMethod("getLayoutManager");
+            stopScrollMethod = rvClass.getMethod("stopScroll");
+            canScrollHorizMethod = Class.forName("androidx.recyclerview.widget.RecyclerView$LayoutManager").getMethod("canScrollHorizontally");
         } catch (Throwable ignored) {}
     }
 
@@ -64,7 +69,10 @@ public class OverScrollController {
     private float c1 = 0f, c2 = 0f;
     private float zo = 14.04f, od = 13.5325f;
 
-    private Boolean isExcluded;
+    private Boolean isExcluded, isHorizontal;
+    private Rect origClipBounds;
+    private final Rect clipRect = new Rect();
+    private boolean clipActive = false;
     private boolean swipingReflectInit = false;
     private WeakReference<Object> enclosingActivityRef;
     private Field pdoField, pboField, trackField;
@@ -113,7 +121,19 @@ public class OverScrollController {
         return rubberC() * k * k;
     }
 
+    private boolean isHorizontal() {
+        if (isHorizontal != null) return isHorizontal;
+        try {
+            Object lm = getLayoutManagerMethod != null ? getLayoutManagerMethod.invoke(listView) : null;
+            if (lm != null && canScrollHorizMethod != null) {
+                return isHorizontal = Boolean.TRUE.equals(canScrollHorizMethod.invoke(lm));
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
     public boolean isExcludedScreen() {
+        if (Boolean.TRUE.equals(isExcluded) || isHorizontal()) return true;
         if (isExcluded == null) {
             for (ViewParent p = listView; p instanceof View; p = p.getParent()) {
                 String n = p.getClass().getName();
@@ -122,9 +142,8 @@ public class OverScrollController {
                 }
             }
             if (listView.getParent() != null) isExcluded = false;
-            else return false;
         }
-        return isExcluded;
+        return Boolean.TRUE.equals(isExcluded);
     }
 
     private boolean isSelectionActive() {
@@ -297,6 +316,7 @@ public class OverScrollController {
             fv.view.setTranslationY(fv.initY + (fv.bottom ? Math.min(0f, newOffset) : newOffset));
         }
         applyZoom(newOffset);
+        updateClipBounds(newOffset);
         invalidateViews();
     }
 
@@ -309,8 +329,55 @@ public class OverScrollController {
             fv.view.setTranslationY(fv.initY);
         }
         resetZoom();
+        restoreClipBounds();
         floatingViews.clear();
         invalidateViews();
+    }
+
+    private void updateClipBounds(float off) {
+        int w = listView.getWidth(), h = listView.getHeight();
+        if (w <= 0 || h <= 0 || Math.abs(off) < 0.5f) {
+            restoreClipBounds();
+            return;
+        }
+        if (!clipActive) {
+            origClipBounds = listView.getClipBounds();
+            clipActive = true;
+        }
+        float sy = listView.getScaleY();
+        if (sy <= 0.001f) sy = 1f;
+        float pivotY = off > 0f ? 0f : h;
+
+        int minX = origClipBounds != null ? origClipBounds.left : 0;
+        int maxX = origClipBounds != null ? origClipBounds.right : w;
+        int minY = origClipBounds != null ? origClipBounds.top : 0;
+        int maxY = origClipBounds != null ? origClipBounds.bottom : h;
+
+        if (off < 0f && listView.getChildCount() > 0) {
+            View c0 = listView.getChildAt(0);
+            if (c0 != null && c0.getClass().getName().endsWith("$PaddingView") && c0.getBottom() > minY) {
+                minY = c0.getBottom();
+            }
+        }
+
+        int clipTop = (int) Math.ceil(pivotY + (minY - pivotY - off) / sy);
+        int clipBottom = (int) Math.floor(pivotY + (maxY - pivotY - off) / sy);
+        clipRect.set(
+                Math.max(0, minX),
+                Math.max(0, Math.min(h, clipTop)),
+                Math.min(w, maxX),
+                Math.max(0, Math.min(h, clipBottom))
+        );
+        if (clipRect.top > clipRect.bottom) clipRect.bottom = clipRect.top;
+        listView.setClipBounds(clipRect);
+    }
+
+    private void restoreClipBounds() {
+        if (clipActive) {
+            listView.setClipBounds(origClipBounds);
+            origClipBounds = null;
+            clipActive = false;
+        }
     }
 
     private void applyZoom(float off) {
@@ -436,9 +503,16 @@ public class OverScrollController {
     }
 
     public void reset() {
+        if (offset == 0f && !animating && state == STATE_IDLE && floatingViews.isEmpty() && !clipActive) return;
         stopAnimation();
         resetOffset();
         state = STATE_IDLE;
+    }
+
+    private void stopListScroll() {
+        try {
+            if (stopScrollMethod != null) stopScrollMethod.invoke(listView);
+        } catch (Throwable ignored) {}
     }
 
     public boolean onBeforeDispatchTouchEvent(MotionEvent ev) {
@@ -578,6 +652,7 @@ public class OverScrollController {
                 if ((offset > 0.5f && vy < -150f && listView.canScrollVertically(1)) ||
                     (offset < -0.5f && vy > 150f && listView.canScrollVertically(-1))) {
                     reset();
+                    stopListScroll();
                     try {
                         Method flingMethod = listView.getClass().getMethod("fling", int.class, int.class);
                         flingMethod.invoke(listView, 0, (int) -vy);
@@ -590,6 +665,7 @@ public class OverScrollController {
                     float v = Math.max(-5000f, Math.min(vy * rubberSlope(), 5000f));
                     startSpring(offset, v);
                     state = STATE_IDLE;
+                    stopListScroll();
                     return true;
                 }
                 state = STATE_IDLE;
